@@ -1,6 +1,6 @@
 # apigw-nlb-eks
 
-Deploy EKS cluster with API Gateway and private integration with NLB to expose API 
+Deploy EKS cluster with API Gateway and private integration with NLB to expose a sample Hello World
 
 # 1. Setup environment
 ## a. Install kubectl (v1.20)
@@ -50,11 +50,11 @@ source <(helm completion bash)
 ```
 eksctl create cluster -f cluster.yaml
 ```
-- Export env variable for later use
+- Export env variable for later use, replace <cluster_name> as in cluster.yaml file 
 ```
 export AGW_AWS_REGION=us-east-2
 export AGW_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-export AGW_EKS_CLUSTER_NAME=demo-cluster
+export AGW_EKS_CLUSTER_NAME=<cluster_name>
 ```
 - Add user to master group to see EKS resources (optional)
 ```
@@ -75,7 +75,7 @@ eksctl utils associate-iam-oidc-provider \
   --approve
 ```
 
-- Download the IAM policy document for AWS Load Balancer Controller
+- Download the IAM policy document for AWS Load Balancer Controller:
 ```
 curl -S https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.2.0/docs/install/iam_policy.json -o iam-policy.json
 ```
@@ -87,11 +87,11 @@ aws iam create-policy \
   --policy-document file://iam-policy.json 2> /dev/null
 ```
 
-- Create a service account:
+- Create a service account for AWS Load Balancer Controller:
 ```
 eksctl create iamserviceaccount \
   --cluster=$AGW_EKS_CLUSTER_NAME \
-  --region $AGW_AWS_REGION \
+  --region=$AGW_AWS_REGION \
   --namespace=kube-system \
   --name=aws-load-balancer-controller \
   --override-existing-serviceaccounts \
@@ -169,7 +169,12 @@ helm install ack-${SERVICE}-controller \
   --set aws.region=$AGW_AWS_REGION
 ```
 
-## d. Create VPC Link
+## d. Deploy application and service:
+```
+kubectl apply -f helloworld-app.yaml
+```
+
+## e. Create VPC Link
 - Create SG for VPC Link
 ```
 AGW_VPCLINK_SG=$(aws ec2 create-security-group \
@@ -209,9 +214,12 @@ EOF
 kubectl apply -f vpclink.yaml
 ```
 
-- Create API with VPC Link integration:
+- Check if VPC Link is AVAILABLE:
+```
+aws apigatewayv2 get-vpc-links --region $AGW_AWS_REGION
 ```
 
+- Create API with VPC Link integration:
 ```
 cat > apigw-api.yaml<<EOF
 apiVersion: apigatewayv2.services.k8s.aws/v1alpha1
@@ -226,36 +234,13 @@ spec:
                 "version": "v1"
               },
               "paths": {
-              "/\$default": {
-                "x-amazon-apigateway-any-method" : {
-                "isDefaultRoute" : true,
-                "x-amazon-apigateway-integration" : {
-                "payloadFormatVersion" : "1.0",
-                "connectionId" : "$(kubectl get vpclinks.apigatewayv2.services.k8s.aws \
-  nlb-internal \
-  -o jsonpath="{.status.vpcLinkID}")",
-                "type" : "http_proxy",
-                "httpMethod" : "GET",
-                "uri" : "$(aws elbv2 describe-listeners \
-  --load-balancer-arn $(aws elbv2 describe-load-balancers \
-  --region $AGW_AWS_REGION \
-  --query "LoadBalancers[?contains(DNSName, '$(kubectl get service authorservice \
-  -o jsonpath="{.status.loadBalancer.ingress[].hostname}")')].LoadBalancerArn" \
-  --output text) \
-  --region $AGW_AWS_REGION \
-  --query "Listeners[0].ListenerArn" \
-  --output text)",
-               "connectionType" : "VPC_LINK"
-                  }
-                }
-              },
-              "/meta": {
+              "/hello": {
                   "get": {
                     "x-amazon-apigateway-integration": {
                        "uri" : "$(aws elbv2 describe-listeners \
   --load-balancer-arn $(aws elbv2 describe-load-balancers \
   --region $AGW_AWS_REGION \
-  --query "LoadBalancers[?contains(DNSName, '$(kubectl get service echoserver \
+  --query "LoadBalancers[?contains(DNSName, '$(kubectl get service hello-service \
   -o jsonpath="{.status.loadBalancer.ingress[].hostname}")')].LoadBalancerArn" \
   --output text) \
   --region $AGW_AWS_REGION \
@@ -290,6 +275,16 @@ spec:
   stageName: api
   autoDeploy: true
 " | kubectl apply -f -
+```
+
+- Get API endpoint:
+```
+kubectl get api apitest-private-nlb -o jsonpath="{.status.apiEndpoint}"
+```
+
+- Test the API:
+```
+curl $(kubectl get api apitest-private-nlb -o jsonpath="{.status.apiEndpoint}")/api/hello
 ```
 
 # 3. Clean Up 
