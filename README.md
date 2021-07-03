@@ -3,7 +3,7 @@
 Deploy EKS cluster with API Gateway and private integration with NLB to expose API 
 
 # 1. Setup environment
-## a. Install kubectl
+## a. Install kubectl (v1.20)
 ```
 sudo curl --silent --location -o /usr/local/bin/kubectl https://dl.k8s.io/release/v1.20.0/bin/linux/amd64/kubectl
 sudo chmod +x /usr/local/bin/kubectl
@@ -56,13 +56,13 @@ export AGW_AWS_REGION=us-east-2
 export AGW_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
 export AGW_EKS_CLUSTER_NAME=demo-cluster
 ```
-- Add user to master group to see EKS resources
+- Add user to master group to see EKS resources (optional)
 ```
 eksctl create iamidentitymapping \
   --cluster $AGW_EKS_CLUSTER_NAME \
   --region $AGW_AWS_REGION \
-  --arn arn:aws:iam::$AGW_ACCOUNT_ID:user/quannm244 \
-  --username quannm244 \
+  --arn arn:aws:iam::$AGW_ACCOUNT_ID:user/<user_name> \
+  --username <user_name> \
   --group system:masters
 ```
 
@@ -75,7 +75,7 @@ eksctl utils associate-iam-oidc-provider \
   --approve
 ```
 
-- Download the IAM policy document
+- Download the IAM policy document for AWS Load Balancer Controller
 ```
 curl -S https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.2.0/docs/install/iam_policy.json -o iam-policy.json
 ```
@@ -83,7 +83,7 @@ curl -S https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-cont
 - Create an IAM policy for AWS Load Balancer Controller:
 ```
 aws iam create-policy \
-  --policy-name AWSLoadBalancerControllerIAMPolicy-APIGWDEMO \
+  --policy-name AWSLoadBalancerControllerIAMPolicy-APIGW \
   --policy-document file://iam-policy.json 2> /dev/null
 ```
 
@@ -95,7 +95,7 @@ eksctl create iamserviceaccount \
   --namespace=kube-system \
   --name=aws-load-balancer-controller \
   --override-existing-serviceaccounts \
-  --attach-policy-arn=arn:aws:iam::${AGW_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy-APIGWDEMO \
+  --attach-policy-arn=arn:aws:iam::${AGW_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy-APIGW \
   --approve
 ```
 
