@@ -29,11 +29,13 @@ rm -vf ${HOME}/.aws/credentials
 ## c. Uninstall awscli v1 if present and install awscli v2
 ```
 export AWS_PATH=$(which aws)
-rm -rf $AWS_PATH
+sudo rm -rf $AWS_PATH
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
-sudo ./aws/install -i /usr/local/aws-cli -b $AWS_PATH
+sudo ./aws/install -i /usr/local/aws-cli -b /usr/local/bin
 aws --version
+rm awscliv2.zip
+rm -rf aws
 ```
 
 ## d. Install helm

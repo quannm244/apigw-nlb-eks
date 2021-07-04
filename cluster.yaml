@@ -13,7 +13,7 @@ vpc:
     privateAccess: true
 managedNodeGroups:
   - name: worker
-    instanceType: "t3a.medium"
+    instanceType: "m5.large"
     minSize: 1
     maxSize: 5
     desiredCapacity: 1
