@@ -50,22 +50,22 @@ source <(helm completion bash)
 # 2. Create EKS cluster, deployment and service
 ## a. Create EKS cluster
 ```
-eksctl create cluster -f cluster.yaml
+eksctl create cluster -f apigw-nlb-eks/cluster.yaml
 ```
 - Export env variable for later use, replace <cluster_name> as in cluster.yaml file 
 ```
 export AGW_AWS_REGION=us-east-2
 export AGW_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-export AGW_EKS_CLUSTER_NAME=<cluster_name>
+export AGW_EKS_CLUSTER_NAME=demo-cluster
 ```
-- Add user to master group to see EKS resources (optional)
+- Add user to master group to see EKS resources (optional), replace <user_name> with required one
 ```
 eksctl create iamidentitymapping \
-  --cluster $AGW_EKS_CLUSTER_NAME \
-  --region $AGW_AWS_REGION \
-  --arn arn:aws:iam::$AGW_ACCOUNT_ID:user/<user_name> \
-  --username <user_name> \
-  --group system:masters
+--cluster $AGW_EKS_CLUSTER_NAME \
+--region $AGW_AWS_REGION \
+--arn arn:aws:iam::$AGW_ACCOUNT_ID:user/<user_name> \
+--username <user_name> \
+--group system:masters
 ```
 
 ## b. Deploy AWS Load Balancer Controller
@@ -271,7 +271,7 @@ echo "
 apiVersion: apigatewayv2.services.k8s.aws/v1alpha1
 kind: Stage
 metadata:
-  name: "apiv2"
+  name: "apiv1"
 spec:
   apiID: $(kubectl get apis.apigatewayv2.services.k8s.aws apitest-private-nlb -o=jsonpath='{.status.apiID}')
   stageName: api
@@ -288,9 +288,113 @@ kubectl get api apitest-private-nlb -o jsonpath="{.status.apiEndpoint}"
 ```
 curl $(kubectl get api apitest-private-nlb -o jsonpath="{.status.apiEndpoint}")/api/hello
 ```
-
-# 3. Clean Up 
+## f. Create Kafka cluster using Strimzi Operator
+- Create strimzi operator:
 ```
+kubectl apply -f strimzi-kafka-operator/install/cluster-operator
+```
+- Create kafka cluster:
+```
+kubectl apply -f strimzi-kafka-operator/examples/kafka/kafka-ephemeral-single.yaml
+```
+- Get the endpoint:
+```
+kubectl get service my-cluster-kafka-external-bootstrap -o=jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+```
+- Test the endpoint, replace <endpoint> with output from command above
+```
+kubectl run kafka-producer -it --image=strimzi/kafka:latest-kafka-2.4.0 --rm=true --restart=Never -- bin/kafka-console-producer.sh --broker-list <endpoint>:9094 --topic my-topic
+
+kubectl run kafka-consumer -it --image=strimzi/kafka:latest-kafka-2.4.0 --rm=true --restart=Never -- bin/kafka-console-consumer.sh --bootstrap-server <endpoint>:9094 --topic my-topic --from-beginning
+```
+
+# 3. Create RDS database
+- Create Subnet group for RDS instance:
+```
+export SUBNET1=$(aws ec2 describe-subnets \
+--filter Name=tag:kubernetes.io/role/internal-elb,Values=1 \
+--query 'Subnets[0].SubnetId' \
+--region $AGW_AWS_REGION --output text)
+export SUBNET2=$(aws ec2 describe-subnets \
+--filter Name=tag:kubernetes.io/role/internal-elb,Values=1 \
+--query 'Subnets[1].SubnetId' \
+--region $AGW_AWS_REGION --output text)
+export SUBNET3=$(aws ec2 describe-subnets \
+--filter Name=tag:kubernetes.io/role/internal-elb,Values=1 \
+--query 'Subnets[2].SubnetId' \
+--region $AGW_AWS_REGION --output text)
+
+aws rds create-db-subnet-group \
+--db-subnet-group-name db_subnetgroup \
+--db-subnet-group-description 'demo_db_subnetgroup' \
+--subnet-ids [\"$SUBNET1\",\"$SUBNET2\",\"$SUBNET3\"]
+```
+
+- Create SG to allow DB connection:
+```
+export RDS_SG=$(aws ec2 create-security-group --group-name RDS_SG --description "Security group for RDS" --vpc-id $AGW_VPC_ID --query 'GroupId' --output text)
+aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 5432 --cidr 10.0.0.0/16
+```
+
+- Create DB instance, replace master <username> and <password>:
+```
+aws rds create-db-instance \
+--db-instance-identifier demo-dbinstance \
+--db-instance-class db.t3.micro \
+--engine postgres \
+--master-username <username> \
+--master-user-password <password> \
+--allocated-storage 20 \
+--vpc-security-group-ids $RDS_SG \
+--db-subnet-group-name db_subnetgroup \
+--no-multi-az
+```
+
+# 4. Push image to ECR:
+- Authenticate using AWS Credentials:
+```
+export AWS_ACCESS_KEY_ID=
+export AWS_SECRET_ACCESS_KEY=
+export AWS_DEFAULT_REGION=
+```
+
+- Retrieve an authentication token and authenticate your Docker client to your registry:
+```
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 657750027235.dkr.ecr.us-east-2.amazonaws.com
+```
+
+- Create repository to store image:
+```
+aws ecr create-repository --repository-name <repo_name>
+```
+
+- Build and tag image:
+```
+docker build -t <repo_name> .
+docker tag <repo_name>:<tag> 657750027235.dkr.ecr.us-east-2.amazonaws.com/<repo_name>:<tag>
+```
+
+- Push to ECR:
+```
+docker push 657750027235.dkr.ecr.us-east-2.amazonaws.com/<repo_name>:<tag>
+```
+
+# 5. Clean Up 
+```
+export AGW_AWS_REGION=us-east-2
+export AGW_EKS_CLUSTER_NAME=demo-cluster
+
+kubectl delete -f strimzi-kafka-operator/examples/kafka/kafka-ephemeral-single.yaml
+sleep 20
+kubectl delete -f strimzi-kafka-operator/install/cluster-operator
+sleep 10
+
+aws rds delete-db-instance \
+--db-instance-identifier demo-dbinstance \
+--delete-automated-backups \
+--no-skip-final-snapshot \
+--final-db-snapshot-identifier final-snapshot
+
 kubectl delete stages.apigatewayv2.services.k8s.aws apiv1 
 kubectl delete apis.apigatewayv2.services.k8s.aws apitest-private-nlb
 kubectl delete vpclinks.apigatewayv2.services.k8s.aws nlb-internal 
@@ -312,4 +416,7 @@ done
 aws iam delete-policy --policy-arn $(echo $(aws iam list-policies --query 'Policies[?PolicyName==`ACKIAMPolicy`].Arn' --output text))
 aws iam delete-policy --policy-arn $(echo $(aws iam list-policies --query 'Policies[?PolicyName==`AWSLoadBalancerControllerIAMPolicy-APIGWDEMO`].Arn' --output text))
 eksctl delete cluster --name $AGW_EKS_CLUSTER_NAME --region $AGW_AWS_REGION
+
+aws ecr delete-repository--repository-name <repo_name>
 ```
+
